@@ -37,6 +37,39 @@ grafana/
         |-- redis.json
 ```
 > create the folders accordingly in your project
+
+- ***we can also set the paths were we want to copy our provisioning files to, by using environment variables:*** 
+
+#### Default paths && environment variables
+from the grafana docs - [configure-docker](https://grafana.com/docs/grafana/latest/setup-grafana/configure-docker/)
+> Grafana comes with default configuration parameters that remain the same among versions regardless of the operating system or the environmen
+>
+> The following configurations are set by default when you start the Grafana Docker container. When running in Docker you cannot change the configurations by editing the conf/grafana.ini file. Instead, you can modify the configuration using environment variables.
+
+| Setting	| Default value | 
+| --- |  --- |
+| GF_PATHS_CONFIG	| /etc/grafana/grafana.ini |
+| GF_PATHS_DATA	| /var/lib/grafana |
+| GF_PATHS_HOME	| /usr/share/grafana |
+| GF_PATHS_LOGS	| /var/log/grafana |
+| GF_PATHS_PLUGINS	| /var/lib/grafana/plugins |
+| GF_PATHS_PROVISIONING	| /etc/grafana/provisioning |
+
+### environment variables
+- add a .env file in your docker compose project directory to use values like  `${GRAFANA_PASSWORD}` in your docker compose file
+```yml
+DB_HOST=postgresql
+DB_PORT=5432
+DB_NAME=monitoring
+
+DB_USERNAME=homestead
+DB_PASSWORD=secret
+
+PROMETHEUS_PORT=9090
+GRAFANA_PORT=3000
+GRAFANA_PASSWORD=secret
+```
+
  ## files for provisioning
 
  - create your files for provisioning
@@ -71,7 +104,7 @@ datasources:
 ```
 > ./grafana/provisioning/datasources/default.yml
 
-## file permissions
+### file permissions
 - after you created your files you need to set permissions accordingly, or grafana container might fail
   - cd to your root project folder
 ```bash
@@ -79,10 +112,11 @@ sudo chmod -R +x ./grafana
 sudo chmod -R 775 ./grafana
 sudo chown -R 1000:1000 ./grafana
 ```
+- make sure to do the same for the prometheus.yml in the prometheus folder
 > you can check permissions by using `ll -R`
 
 ## docker compose file
-> ***see the  file (here)[https://github.com/ji-podhead/Grafana-11.5-with-Prometheus-and-Docker-Compose/blob/main/docker-compose.yml]
+> ***docker compose file from the example:  [here](https://github.com/user-attachments/assets/ac9cafe7-fcb0-47e6-8d40-6119b352888e)***
 ### prometheus ip
 - notice that we hardcode a ip to prometheus, so  we can use it in the grafana datasources provisioning file
 ```yml
@@ -91,6 +125,13 @@ sudo chown -R 1000:1000 ./grafana
         network1:
           ipv4_address: 200.0.0.10
 ```
+### prometheus volumes
+in order to define our exports (we will explain this later), we need to copy the prometheus.yml from `./prometheus/prometheus.yml` to `/etc/prometheus.yml`
+```
+volumes:
+    - ./prometheus/prometheus.yml:/etc/prometheus.yml
+```
+
 ### grafana volumes
 -  1. we create the required grafana volume
 -  2. we copy our user dashboards over to `/home/grafana/dashboards`
@@ -109,9 +150,9 @@ sudo chown -R 1000:1000 ./grafana
         - ./grafana/provisioning/alerting/default.yml:/etc/grafana/provisioning/alerting/default.yml
 ```
 
-### grafana environment variables
+### grafana environment variables in docker compose
 - we can set certain grafana environment variables in the compose file
-- the values for this can be set in the .env folder
+- the values for this can be set in the .env folder as we explained before
 ```yml
 ...
       environment:
@@ -121,16 +162,50 @@ sudo chown -R 1000:1000 ./grafana
           GF_PATHS_CONFIG: /etc/grafana/grafana.ini
 ```
 > here we can set a few values like the default config path etc
-- add a .env file in your docker compose project directory to use values like  `${GRAFANA_PASSWORD}` in your docker compose file
+
+### exporters
+[grafana docs](https://grafana.com/oss/prometheus/exporters/):
+>  Exporters transform metrics from specific sources into a format that can be ingested by Prometheus
+- so in order to scrape metrics from our services, we need to have a additional container deployment that sends the metrics to prometheus
+- here is the exporter for postgresql
 ```yml
-DB_HOST=postgresql
-DB_PORT=5432
-DB_NAME=monitoring
-
-DB_USERNAME=homestead
-DB_PASSWORD=secret
-
-PROMETHEUS_PORT=9090
-GRAFANA_PORT=3000
-GRAFANA_PASSWORD=secret
+  postgresql-exporter:
+      image: prometheuscommunity/postgres-exporter
+      container_name: postgresql-exporter
+      privileged: true
+      ports:
+          - "9187:9187"
+      environment:
+          DATA_SOURCE_NAME: "postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}/${DB_NAME}?sslmode=disable"
+      depends_on:
+          prometheus:
+              condition: service_started
+          postgresql:
+              condition: service_healthy
+      restart: unless-stopped
+      networks:
+          - network1
 ```
+## prometheus.yml
+```yml
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: 'envoy'
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ['envoy:19000']
+        labels:
+          group: 'envoy'
+  - job_name: postgresql
+    static_configs:
+      - targets: ['postgresql-exporter:9187']
+
+  - job_name: redis_exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']
+```
+
+- in the prometheus yml we need to define our targets of our exporters
+- we use the ports that we defined in the playbook for the exporters, so for postgres its 9187
